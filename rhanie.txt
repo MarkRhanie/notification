@@ -1,0 +1,714 @@
+PART 1: NOTIFICATION SYSTEM
+1.1 PostProvider Notification Methods (post_provider.dart)
+dart
+// ============================================
+// NOTIFICATION METHODS IN PostProvider
+// ============================================
+
+Future<void> _addNotificationForUser({
+  required String targetUsername,
+  required Map<String, dynamic> notification,
+}) async {
+  try {
+    final authService = AuthService();
+    final users = await authService.getAllUsers();
+
+    final targetUser = users.firstWhere(
+      (u) => u['username'] == targetUsername,
+      orElse: () => {},
+    );
+
+    if (targetUser.isEmpty) return;
+
+    final targetUserId = targetUser['id'].toString();
+
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'notifications_$targetUserId';
+    final existingJson = prefs.getString(key);
+
+    List<Map<String, dynamic>> notifications = [];
+    if (existingJson != null) {
+      notifications = List<Map<String, dynamic>>.from(json.decode(existingJson));
+    }
+
+    notifications.insert(0, notification);
+
+    if (notifications.length > 100) {
+      notifications = notifications.sublist(0, 100);
+    }
+
+    await prefs.setString(key, json.encode(notifications));
+
+    if (authService.currentUser?['id'].toString() == targetUserId) {
+      _notifications.clear();
+      _notifications.addAll(notifications);
+      notifyListeners();
+    }
+  } catch (e) {
+    print('Error adding notification: $e');
+  }
+}
+
+void toggleLike(String postId) {
+  final index = _posts.indexWhere((p) => p.id == postId);
+  if (index != -1) {
+    final post = _posts[index];
+    final authService = AuthService();
+    final currentUsername = authService.currentUser?['username'] ?? 'unknown';
+    final postUsername = post.username.replaceFirst('@', '');
+
+    if (post.isLiked) {
+      _posts[index] = post.copyWith(isLiked: false);
+      _userLikedPosts.removeWhere((p) => p.id == postId);
+      
+      _notifications.removeWhere((n) =>
+        n['postId'] == postId &&
+        n['username'] == currentUsername &&
+        n['type'] == 'like'
+      );
+    } else {
+      _posts[index] = post.copyWith(isLiked: true);
+      _userLikedPosts.add(_posts[index]);
+
+      if (postUsername != currentUsername) {
+        _addNotificationForUser(
+          targetUsername: postUsername,
+          notification: {
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'type': 'like',
+            'username': currentUsername,
+            'postId': postId,
+            'postContent': post.songTitle,
+            'postType': post.postType,
+            'timestamp': DateTime.now(),
+            'isRead': false,
+          },
+        );
+      }
+    }
+    notifyListeners();
+  }
+}
+
+void toggleRepost(String postId, {String? quote}) {
+  final index = _posts.indexWhere((p) => p.id == postId);
+  if (index != -1) {
+    final post = _posts[index];
+    final authService = AuthService();
+    final currentUsername = authService.currentUser?['username'] ?? 'unknown';
+    final postOwnerUsername = post.username.replaceFirst('@', '');
+
+    if (post.isReposted) {
+      _posts[index] = post.copyWith(
+        isReposted: false,
+        reposts: post.reposts - 1,
+      );
+      _userReposts.removeWhere((p) => p.id == postId);
+    } else {
+      _posts[index] = post.copyWith(
+        isReposted: true,
+        reposts: post.reposts + 1,
+      );
+      _userReposts.add(_posts[index]);
+
+      if (postOwnerUsername != currentUsername) {
+        _addNotificationForUser(
+          targetUsername: postOwnerUsername,
+          notification: {
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'type': 'repost',
+            'username': currentUsername,
+            'postId': postId,
+            'postContent': post.songTitle,
+            'postType': post.postType,
+            'timestamp': DateTime.now(),
+            'isRead': false,
+          },
+        );
+      }
+    }
+    notifyListeners();
+  }
+}
+
+void addComment(String postId, String text, {String? replyToCommentId, String? username}) {
+  final index = _posts.indexWhere((p) => p.id == postId);
+  if (index != -1) {
+    final post = _posts[index];
+    String commentUsername = username ?? '@anonymous';
+
+    String userAvatar;
+    if (commentUsername.length > 1) {
+      if (commentUsername.startsWith('@')) {
+        userAvatar = commentUsername.length > 1 ? commentUsername[1].toUpperCase() : 'U';
+      } else {
+        userAvatar = commentUsername[0].toUpperCase();
+      }
+    } else {
+      userAvatar = commentUsername.isNotEmpty ? commentUsername[0].toUpperCase() : 'U';
+    }
+
+    final newComment = Comment(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      username: commentUsername,
+      userAvatar: userAvatar,
+      text: text,
+      timestamp: DateTime.now(),
+    );
+
+    _posts[index] = post.copyWith(
+      comments: post.comments + 1,
+      commentsList: [...post.commentsList, newComment],
+    );
+
+    final authService = AuthService();
+    final currentUsername = authService.currentUser?['username'] ?? 'unknown';
+    final postOwnerUsername = post.username.replaceFirst('@', '');
+
+    if (postOwnerUsername != currentUsername) {
+      _addNotificationForUser(
+        targetUsername: postOwnerUsername,
+        notification: {
+          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+          'type': 'comment',
+          'username': currentUsername,
+          'postId': postId,
+          'postContent': post.songTitle,
+          'commentText': text.length > 30 ? '${text.substring(0, 30)}...' : text,
+          'postType': post.postType,
+          'timestamp': DateTime.now(),
+          'isRead': false,
+        },
+      );
+    }
+
+    notifyListeners();
+  }
+}
+
+void addFollowNotification({required String followerUsername, required String targetUserId}) {
+  _addNotificationForUser(
+    targetUsername: followerUsername,
+    notification: {
+      'id': DateTime.now().millisecondsSinceEpoch.toString(),
+      'type': 'follow',
+      'username': followerUsername,
+      'postId': '',
+      'postContent': '',
+      'postType': 'FOLLOW',
+      'timestamp': DateTime.now(),
+      'isRead': false,
+    },
+  );
+}
+
+Future<void> _loadNotificationsForCurrentUser() async {
+  try {
+    final authService = AuthService();
+    final currentUser = authService.currentUser;
+    if (currentUser == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'notifications_${currentUser['id']}';
+    final notificationsJson = prefs.getString(key);
+
+    if (notificationsJson != null) {
+      _notifications.clear();
+      _notifications.addAll(List<Map<String, dynamic>>.from(json.decode(notificationsJson)));
+    }
+  } catch (e) {
+    print('Error loading notifications: $e');
+  }
+}
+
+int getUnreadNotificationCount() {
+  return _notifications.where((n) => n['isRead'] == false).length;
+}
+
+void markNotificationAsRead(String notificationId) {
+  final index = _notifications.indexWhere((n) => n['id'] == notificationId);
+  if (index != -1) {
+    _notifications[index]['isRead'] = true;
+    notifyListeners();
+  }
+}
+
+void markAllNotificationsAsRead() {
+  for (var notification in _notifications) {
+    notification['isRead'] = true;
+  }
+  notifyListeners();
+}
+1.2 ThreadProvider Notification Methods (thread_provider.dart)
+dart
+// ============================================
+// THREAD NOTIFICATION METHODS
+// ============================================
+
+Future<void> _addThreadNotificationForUser({
+  required String targetUsername,
+  required Map<String, dynamic> notification,
+}) async {
+  try {
+    final authService = AuthService();
+    final users = await authService.getAllUsers();
+
+    final targetUser = users.firstWhere(
+      (u) => u['username'] == targetUsername,
+      orElse: () => {},
+    );
+
+    if (targetUser.isEmpty) return;
+    final targetUserId = targetUser['id'].toString();
+
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'thread_notifications_$targetUserId';
+    final existingJson = prefs.getString(key);
+
+    List<Map<String, dynamic>> notifications = [];
+    if (existingJson != null) {
+      notifications = List<Map<String, dynamic>>.from(json.decode(existingJson));
+    }
+
+    notifications.insert(0, notification);
+    if (notifications.length > 100) {
+      notifications = notifications.sublist(0, 100);
+    }
+
+    await prefs.setString(key, json.encode(notifications));
+
+    if (authService.currentUser?['id'].toString() == targetUserId) {
+      _threadNotifications.clear();
+      _threadNotifications.addAll(notifications);
+      notifyListeners();
+    }
+  } catch (e) {
+    print('Error adding thread notification: $e');
+  }
+}
+
+void toggleLike(String postId) {
+  print('=== TOGGLE THREAD LIKE ===');
+  print('PostId: $postId');
+
+  if (_currentUsername == null) {
+    if (_authService != null && _authService!.currentUser != null) {
+      _currentUsername = _authService!.currentUser!['username'];
+    } else {
+      print('ERROR: No user logged in - cannot like');
+      return;
+    }
+  }
+
+  final index = _threadPosts.indexWhere((p) => p.id == postId);
+  if (index != -1) {
+    final post = _threadPosts[index];
+    final newLikedState = !post.isLiked;
+    final postUsername = post.username.replaceFirst('@', '');
+
+    _threadPosts[index] = post.copyWith(
+      likeCount: newLikedState ? post.likeCount + 1 : post.likeCount - 1,
+      isLiked: newLikedState,
+    );
+
+    if (newLikedState) {
+      final alreadyExists = _userLikedThreads.any((p) => p.id == postId);
+      if (!alreadyExists) {
+        _userLikedThreads.add(_threadPosts[index]);
+      }
+
+      if (postUsername != _currentUsername) {
+        _addThreadNotificationForUser(
+          targetUsername: postUsername,
+          notification: {
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'type': 'like',
+            'username': _currentUsername,
+            'postId': postId,
+            'postContent': post.content.length > 50
+                ? '${post.content.substring(0, 50)}...'
+                : post.content,
+            'postType': 'THREAD',
+            'timestamp': DateTime.now(),
+            'isRead': false,
+          },
+        );
+      }
+    } else {
+      _userLikedThreads.removeWhere((p) => p.id == postId);
+    }
+
+    notifyListeners();
+  }
+}
+
+void toggleRepost(String postId) {
+  print('=== TOGGLE THREAD REPOST ===');
+  print('PostId: $postId');
+
+  if (_currentUsername == null) {
+    if (_authService != null && _authService!.currentUser != null) {
+      _currentUsername = _authService!.currentUser!['username'];
+      print('ThreadProvider: Set username from AuthService fallback: $_currentUsername');
+    } else {
+      print('ERROR: No user logged in - cannot repost');
+      return;
+    }
+  }
+
+  final index = _threadPosts.indexWhere((p) => p.id == postId);
+  if (index != -1) {
+    final post = _threadPosts[index];
+    final newRepostState = !post.isReposted;
+    final postOwnerUsername = post.username.replaceFirst('@', '');
+
+    _threadPosts[index] = post.copyWith(
+      repostCount: newRepostState ? post.repostCount + 1 : post.repostCount - 1,
+      isReposted: newRepostState,
+    );
+
+    if (newRepostState) {
+      final alreadyExists = _userRepostedThreads.any((p) => p.id == postId);
+      if (!alreadyExists) {
+        _userRepostedThreads.add(_threadPosts[index]);
+      }
+      print('Thread reposted by $_currentUsername: ${post.id}');
+
+      if (postOwnerUsername != _currentUsername) {
+        _addThreadNotificationForUser(
+          targetUsername: postOwnerUsername,
+          notification: {
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'type': 'repost',
+            'username': _currentUsername,
+            'postId': postId,
+            'postContent': post.content.length > 50
+                ? '${post.content.substring(0, 50)}...'
+                : post.content,
+            'postType': 'THREAD',
+            'timestamp': DateTime.now(),
+            'isRead': false,
+          },
+        );
+        print('🔔 Added thread repost notification: $_currentUsername reposted $postOwnerUsername\'s thread');
+      }
+    } else {
+      _userRepostedThreads.removeWhere((p) => p.id == postId);
+      print('Thread unreposted by $_currentUsername: ${post.id}');
+    }
+
+    notifyListeners();
+  }
+}
+
+void addThreadCommentDirect(String postId, ThreadComment newComment) {
+  debugPrint('=== ADD THREAD COMMENT DIRECT ===');
+  debugPrint('PostId: $postId');
+  debugPrint('New comment: ${newComment.username} - ${newComment.text}');
+
+  final index = _threadPosts.indexWhere((p) => p.id == postId);
+  debugPrint('Post index: $index');
+
+  if (index != -1) {
+    final post = _threadPosts[index];
+    debugPrint('Before - Comments count: ${post.comments.length}');
+
+    final updatedComments = List<ThreadComment>.from(post.comments)..add(newComment);
+
+    final updatedPost = ThreadPost(
+      id: post.id,
+      username: post.username,
+      userAvatar: post.userAvatar,
+      content: post.content,
+      timestamp: post.timestamp,
+      replyCount: post.replyCount + 1,
+      repostCount: post.repostCount,
+      likeCount: post.likeCount,
+      isLiked: post.isLiked,
+      isReposted: post.isReposted,
+      isQuote: post.isQuote,
+      images: post.images,
+      userVerifiedType: post.userVerifiedType,
+      category: post.category,
+      comments: updatedComments,
+    );
+
+    _threadPosts[index] = updatedPost;
+
+    final authService = AuthService();
+    final currentUsername = authService.currentUser?['username'] ?? 'unknown';
+    final postOwnerUsername = post.username.replaceFirst('@', '');
+
+    if (postOwnerUsername != currentUsername) {
+      _addThreadNotificationForUser(
+        targetUsername: postOwnerUsername,
+        notification: {
+          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+          'type': 'comment',
+          'username': currentUsername,
+          'postId': postId,
+          'postContent': post.content.length > 50
+              ? '${post.content.substring(0, 50)}...'
+              : post.content,
+          'commentText': newComment.text.length > 30
+              ? '${newComment.text.substring(0, 30)}...'
+              : newComment.text,
+          'postType': 'THREAD',
+          'timestamp': DateTime.now(),
+          'isRead': false,
+        },
+      );
+    }
+
+    debugPrint('After - Comments count: ${_threadPosts[index].comments.length}');
+    notifyListeners();
+  } else {
+    debugPrint('ERROR: Post not found');
+  }
+}
+
+int getUnreadThreadNotificationCount() {
+  return _threadNotifications.where((n) => n['isRead'] == false).length;
+}
+
+void markThreadNotificationAsRead(String notificationId) {
+  final index = _threadNotifications.indexWhere((n) => n['id'] == notificationId);
+  if (index != -1) {
+    _threadNotifications[index]['isRead'] = true;
+    notifyListeners();
+  }
+}
+
+void markAllThreadNotificationsAsRead() {
+  for (var notification in _threadNotifications) {
+    notification['isRead'] = true;
+  }
+  notifyListeners();
+}
+1.3 NotificationsScreen (notifications_screen.dart)
+dart
+// lib/screens/notifications_screen.dart
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../utils/colors.dart';
+import '../providers/post_provider.dart';
+import '../providers/thread_provider.dart';
+
+class NotificationsScreen extends StatefulWidget {
+  const NotificationsScreen({super.key});
+
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final postProvider = Provider.of<PostProvider>(context, listen: false);
+      final threadProvider = Provider.of<ThreadProvider>(context, listen: false);
+      postProvider.markAllNotificationsAsRead();
+      threadProvider.markAllThreadNotificationsAsRead();
+    });
+  }
+
+  String _getTimeAgo(DateTime timestamp) {
+    final now = DateTime.now();
+    final difference = now.difference(timestamp);
+    if (difference.inDays > 0) return '${difference.inDays}d ago';
+    if (difference.inHours > 0) return '${difference.inHours}h ago';
+    if (difference.inMinutes > 0) return '${difference.inMinutes}m ago';
+    return 'just now';
+  }
+
+  IconData _getNotificationIcon(String type) {
+    switch (type) {
+      case 'like':
+        return Icons.favorite;
+      case 'repost':
+        return Icons.repeat;
+      case 'comment':
+        return Icons.chat_bubble_outline;
+      case 'follow':
+        return Icons.person_add;
+      default:
+        return Icons.notifications;
+    }
+  }
+
+  Color _getNotificationColor(String type) {
+    switch (type) {
+      case 'like':
+        return Colors.red;
+      case 'repost':
+        return AppColors.spotifyGreen;
+      case 'comment':
+        return Colors.blue;
+      case 'follow':
+        return Colors.purple;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  String _getNotificationText(Map<String, dynamic> notification) {
+    final String username = notification['username'];
+    final String type = notification['type'];
+
+    switch (type) {
+      case 'like':
+        return '$username liked your post';
+      case 'repost':
+        return '$username reposted your post';
+      case 'comment':
+        return '$username commented: "${notification['commentText']}"';
+      case 'follow':
+        return '$username started following you';
+      default:
+        return '$username interacted with your post';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer2<PostProvider, ThreadProvider>(
+      builder: (context, postProvider, threadProvider, child) {
+        final musicNotifications = postProvider.notifications;
+        final threadNotifications = threadProvider.threadNotifications;
+
+        List<Map<String, dynamic>> allNotifications = [];
+        allNotifications.addAll(musicNotifications);
+        allNotifications.addAll(threadNotifications);
+        allNotifications.sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
+
+        return Scaffold(
+          backgroundColor: AppColors.background,
+          appBar: AppBar(
+            backgroundColor: AppColors.card,
+            title: const Text(
+              'Notifications',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+              ),
+            ),
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back, color: Colors.white),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+          body: allNotifications.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.notifications_none,
+                        size: 80,
+                        color: Colors.grey[600],
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'No notifications yet',
+                        style: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'When someone likes, reposts, comments, or follows you,\nthey will appear here',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: allNotifications.length,
+                  itemBuilder: (context, index) {
+                    final notification = allNotifications[index];
+                    final bool isUnread = notification['isRead'] == false;
+                    final icon = _getNotificationIcon(notification['type']);
+                    final iconColor = _getNotificationColor(notification['type']);
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      decoration: BoxDecoration(
+                        color: isUnread
+                            ? AppColors.spotifyGreen.withValues(alpha: 0.1)
+                            : AppColors.card,
+                        borderRadius: BorderRadius.circular(15),
+                        border: Border.all(
+                          color: isUnread
+                              ? AppColors.spotifyGreen.withValues(alpha: 0.3)
+                              : Colors.grey[900]!,
+                        ),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.all(12),
+                        leading: CircleAvatar(
+                          radius: 22,
+                          backgroundColor: iconColor.withValues(alpha: 0.2),
+                          child: Icon(
+                            icon,
+                            color: iconColor,
+                            size: 22,
+                          ),
+                        ),
+                        title: Text(
+                          _getNotificationText(notification),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 4),
+                            if (notification['postContent'] != null && notification['postContent'].toString().isNotEmpty)
+                              Text(
+                                notification['postContent'],
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 13,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _getTimeAgo(notification['timestamp']),
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                        onTap: () {
+                          if (notification['type'] == 'like' || notification['type'] == 'repost' || notification['type'] == 'comment' || notification['type'] == 'follow') {
+                            if (notification['postType'] == 'THREAD') {
+                              threadProvider.markThreadNotificationAsRead(notification['id']);
+                            } else {
+                              postProvider.markNotificationAsRead(notification['id']);
+                            }
+                          }
+                        },
+                      ),
+                    );
+                  },
+                ),
+        );
+      },
+    );
+  }
+}
